@@ -343,6 +343,19 @@ else:
         st.session_state.metaapi_running = True
         st.sidebar.success("Bot MetaApi aktive — l ap konekte epi aji nan pwochen sik (60s) la.")
 
+    metaapi_test = st.sidebar.button(
+        "🔌 Teste Koneksyon", key="metaapi_test_btn",
+        disabled=not metaapi_token or not metaapi_account_id
+    )
+    if metaapi_test:
+        with st.sidebar:
+            with st.spinner("Ap eseye konekte ak MetaApi..."):
+                try:
+                    asyncio.run(_metaapi_get_connection(metaapi_token, metaapi_account_id))
+                    st.success("✅ Koneksyon reyisi! Retounen gade paj MetaApi a, li ta dwe vin vèt.")
+                except Exception as e:
+                    st.error(f"❌ Koneksyon echwe: {e}")
+
     if metaapi_stop:
         if st.session_state.metaapi_open_position:
             try:
