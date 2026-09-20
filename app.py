@@ -3,11 +3,13 @@ import yfinance as yf
 import pandas as pd
 import plotly.graph_objects as go
 import json
+import requests
 import websocket
 from streamlit_autorefresh import st_autorefresh
 
 # -------------------------------------------------------------
 # DERIV API — FONKSYON KONEKSYON AK TRANZAKSYON (KONT DEMO)
+# Sistèm 2026: PAT + App ID + OTP avan koneksyon WebSocket
 # -------------------------------------------------------------
 DERIV_SYMBOL_MAP = {
     "EURUSD=X": "frxEURUSD",
@@ -31,10 +33,24 @@ def deriv_send_recv(ws, request, expected_msg_type=None, timeout=10):
             return data
 
 
-def deriv_connect(token):
-    ws = websocket.create_connection("wss://ws.derivws.com/websockets/v3?app_id=1089", timeout=10)
-    auth = deriv_send_recv(ws, {"authorize": token}, "authorize")
-    return ws, auth["authorize"]
+def deriv_get_otp_url(token, app_id, account_id):
+    resp = requests.post(
+        f"https://api.derivws.com/trading/v1/options/accounts/{account_id}/otp",
+        headers={"Authorization": f"Bearer {token}", "Deriv-App-ID": app_id},
+        timeout=10,
+    )
+    if resp.status_code >= 400:
+        raise RuntimeError(f"Deriv OTP erè ({resp.status_code}): {resp.text[:200]}")
+    data = resp.json()
+    if "demo" not in data["data"]["url"]:
+        raise RuntimeError("⚠️ Lyen ou resevwa a se pou yon KONT REYÈL, pa demo. Koneksyon bloke pou sekirite w.")
+    return data["data"]["url"]
+
+
+def deriv_connect(token, app_id, account_id):
+    ws_url = deriv_get_otp_url(token, app_id, account_id)
+    ws = websocket.create_connection(ws_url, timeout=10)
+    return ws
 
 
 def deriv_buy(ws, symbol, direction, stake, multiplier):
@@ -48,7 +64,7 @@ def deriv_buy(ws, symbol, direction, stake, multiplier):
             "contract_type": contract_type,
             "currency": "USD",
             "multiplier": multiplier,
-            "symbol": symbol,
+            "underlying_symbol": symbol,
         },
     }
     resp = deriv_send_recv(ws, request, "buy")
@@ -208,7 +224,12 @@ for key, default in [
     if key not in st.session_state:
         st.session_state[key] = default
 
-deriv_token = st.sidebar.text_input("Deriv API Token (Demo)", type="password")
+deriv_token = st.sidebar.text_input("Deriv API Token (PAT, Demo)", type="password")
+deriv_app_id = st.sidebar.text_input("Deriv App ID", help="Jwenn li sou developers.deriv.com → Dashboard → App yo.")
+deriv_account_id = st.sidebar.text_input(
+    "Deriv Account ID (Login)",
+    help="Egzanp: VRTC12345678 — nimewo kont demo w la, ou wè l sou app.deriv.com oswa MT5."
+)
 deriv_symbol = st.sidebar.text_input(
     "Senbòl Deriv",
     value=DERIV_SYMBOL_MAP.get(symbol, ""),
@@ -218,19 +239,31 @@ stake = st.sidebar.number_input("Estak pa tranzaksyon (USD demo)", min_value=1.0
 multiplier = st.sidebar.number_input("Miltipliyè", min_value=5, max_value=1000, value=100, step=5)
 
 bcol1, bcol2 = st.sidebar.columns(2)
-start_clicked = bcol1.button("▶️ Lanse", disabled=st.session_state.bot_running or not deriv_token)
+start_clicked = bcol1.button(
+    "▶️ Lanse", disabled=st.session_state.bot_running or not (deriv_token and deriv_app_id and deriv_account_id)
+)
 stop_clicked = bcol2.button("⏹️ Fèmen", disabled=not st.session_state.bot_running)
+
+deriv_test_clicked = st.sidebar.button(
+    "🔌 Teste Koneksyon", key="deriv_test_btn",
+    disabled=not (deriv_token and deriv_app_id and deriv_account_id)
+)
+if deriv_test_clicked:
+    with st.sidebar:
+        with st.spinner("Ap eseye konekte ak Deriv..."):
+            try:
+                test_ws = deriv_connect(deriv_token, deriv_app_id, deriv_account_id)
+                test_ws.close()
+                st.success("✅ Koneksyon reyisi sou kont demo!")
+            except Exception as e:
+                st.error(f"❌ Koneksyon echwe: {e}")
 
 if start_clicked:
     try:
-        ws, account_info = deriv_connect(deriv_token)
-        if account_info.get("is_virtual") != 1:
-            st.sidebar.error("⚠️ Sa a se yon KONT REYÈL, pa yon kont demo. Bot la pa lanse pou sekirite w.")
-            ws.close()
-        else:
-            st.session_state.deriv_ws = ws
-            st.session_state.bot_running = True
-            st.sidebar.success(f"Konekte sou kont demo ({account_info.get('loginid')}) ✅")
+        ws = deriv_connect(deriv_token, deriv_app_id, deriv_account_id)
+        st.session_state.deriv_ws = ws
+        st.session_state.bot_running = True
+        st.sidebar.success(f"Konekte sou kont demo ({deriv_account_id}) ✅")
     except Exception as e:
         st.sidebar.error(f"Erè koneksyon Deriv: {e}")
 
