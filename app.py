@@ -1,161 +1,225 @@
-import streamlit as st
-import yfinance as yf
-import pandas as pd
-import plotly.graph_objects as go
+//@version=5
+indicator("SMC Pro Dashboard - Tandans + OB + FVG + Liquidity", overlay=true, max_boxes_count=500, max_labels_count=500, max_lines_count=500)
 
-# -------------------------------------------------------------
-# KONFIGIRASYON PAJ LA
-# -------------------------------------------------------------
-st.set_page_config(
-    page_title="SMC Forex Analyzer",
-    page_icon="📈",
-    layout="wide"
-)
+// ================= INPUTS =================
+grpStruct  = "Estrikti Mache"
+swingLen   = input.int(5, "Longè Swing", group=grpStruct, minval=2)
+obLookback = input.int(10, "Max Bar pou chache OB", group=grpStruct, minval=3, maxval=30)
+maxOB      = input.int(3, "Konbyen OB pou gade (chak sans)", group=grpStruct, minval=1, maxval=10)
 
-st.title("📈 SMC (Smart Money Concepts) Forex Analyzer")
+grpFVG  = "Fair Value Gap"
+showFVG = input.bool(true, "Montre FVG", group=grpFVG)
+maxFVG  = input.int(3, "Konbyen FVG pou gade", group=grpFVG, minval=1, maxval=10)
 
-# -------------------------------------------------------------
-# SIDEBAR PARAMÈT
-# -------------------------------------------------------------
-st.sidebar.header("⚙️ Paramèt Analiz")
+grpLiq    = "Liquidity"
+showLiq   = input.bool(true, "Montre Liquidity Pools", group=grpLiq)
+liqTolPct = input.float(10, "Tolerans Liquidity (% ATR)", group=grpLiq, minval=1) / 100
 
-symbol = st.sidebar.selectbox(
-    "Chwazi Pè / Aktif",
-    ["EURUSD=X", "GBPUSD=X", "GC=F", "USDJPY=X", "AUDUSD=X", "BTC-USD"]
-)
+grpHTF = "Tandans Big Timeframe"
+htf1   = input.timeframe("60", "HTF 1", group=grpHTF)
+htf2   = input.timeframe("D", "HTF 2", group=grpHTF)
 
-interval = st.sidebar.selectbox(
-    "Timeframe",
-    ["15m", "1h", "4h", "1d"],
-    index=1
-)
+// ATR - itilize pou tolerans ki mache sou NENPÒT pè (Gold, Forex, Crypto, elt.)
+atrVal = ta.atr(14)
 
-period = st.sidebar.selectbox(
-    "Peryòd Done",
-    ["5d", "1mo", "3mo", "6mo"],
-    index=1
-)
+// Deklare tablo OB yo BADÈ (anvan yo itilize pi ba) - sa a te koze erè "Undeclared identifier"
+var array<box> bullOBs = array.new<box>()
+var array<box> bearOBs = array.new<box>()
 
-# -------------------------------------------------------------
-# TELECHAJE DONE AN TAN REYÈL
-# -------------------------------------------------------------
-@st.cache_data(ttl=60)
-def load_data(ticker, period, interval):
-    df = yf.download(ticker, period=period, interval=interval)
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-    return df
+// ================= SWING / ESTRIKTI MACHE =================
+swingHigh = ta.pivothigh(high, swingLen, swingLen)
+swingLow  = ta.pivotlow(low, swingLen, swingLen)
 
-with st.spinner("Ap telechaje done mache yo..."):
-    df = load_data(symbol, period, interval)
+var float lastSH = na
+var float lastSL = na
+var float prevSH = na
+var float prevSL = na
 
-if df.empty:
-    st.error("Mwen pa ka jwenn done pou senbòl sa a anba kondisyon sa yo.")
-    st.stop()
+if not na(swingHigh)
+    prevSH := lastSH
+    lastSH := swingHigh
+if not na(swingLow)
+    prevSL := lastSL
+    lastSL := swingLow
 
-# -------------------------------------------------------------
-# LOGIC SMC (DETEKSYON FVG AK ORDER BLOCKS)
-# -------------------------------------------------------------
+var string trend = "neutral"
 
-# 1. Detekte Fair Value Gaps (FVG)
-def get_fvgs(df):
-    fvgs = []
-    for i in range(2, len(df)):
-        # Bullish FVG
-        if df['Low'].iloc[i] > df['High'].iloc[i-2]:
-            fvgs.append({
-                'Type': 'Bullish FVG',
-                'Start_Time': df.index[i-2],
-                'End_Time': df.index[i],
-                'Top': float(df['Low'].iloc[i]),
-                'Bottom': float(df['High'].iloc[i-2])
-            })
-        # Bearish FVG
-        elif df['High'].iloc[i] < df['Low'].iloc[i-2]:
-            fvgs.append({
-                'Type': 'Bearish FVG',
-                'Start_Time': df.index[i-2],
-                'End_Time': df.index[i],
-                'Top': float(df['Low'].iloc[i-2]),
-                'Bottom': float(df['High'].iloc[i])
-            })
-    return fvgs
+brokeUp   = not na(lastSH) and ta.crossover(close, lastSH)
+brokeDown = not na(lastSL) and ta.crossunder(close, lastSL)
 
-# 2. Detekte Order Blocks (OB)
-def get_order_blocks(df):
-    obs = []
-    for i in range(2, len(df)-1):
-        # Bullish OB: Bouji wouj anvan gwo enpilsyon monte
-        if df['Close'].iloc[i-1] < df['Open'].iloc[i-1] and df['Close'].iloc[i] > df['High'].iloc[i-1]:
-            obs.append({
-                'Type': 'Bullish OB',
-                'Time': df.index[i-1],
-                'Top': float(df['High'].iloc[i-1]),
-                'Bottom': float(df['Low'].iloc[i-1])
-            })
-        # Bearish OB: Bouji vèt anvan gwo enpilsyon desann
-        elif df['Close'].iloc[i-1] > df['Open'].iloc[i-1] and df['Close'].iloc[i] < df['Low'].iloc[i-1]:
-            obs.append({
-                'Type': 'Bearish OB',
-                'Time': df.index[i-1],
-                'Top': float(df['High'].iloc[i-1]),
-                'Bottom': float(df['Low'].iloc[i-1])
-            })
-    return obs
+isCHoCHUp   = brokeUp and trend != "bullish"
+isBOSUp     = brokeUp and trend == "bullish"
+isCHoCHDown = brokeDown and trend != "bearish"
+isBOSDown   = brokeDown and trend == "bearish"
 
-fvgs = get_fvgs(df)
-obs = get_order_blocks(df)
+if brokeUp
+    trend := "bullish"
+    // Tandans lan vin bullish - efase tout OB bearish ki kont li kounye a
+    if array.size(bearOBs) > 0
+        for i = array.size(bearOBs) - 1 to 0
+            box.delete(array.get(bearOBs, i))
+        array.clear(bearOBs)
 
-# -------------------------------------------------------------
-# AFICHAJ GRAFIK CANDLESTICK AK PLOTLY
-# -------------------------------------------------------------
-fig = go.Figure(data=[go.Candlestick(
-    x=df.index,
-    open=df['Open'],
-    high=df['High'],
-    low=df['Low'],
-    close=df['Close'],
-    name="Price"
-)])
+if brokeDown
+    trend := "bearish"
+    // Tandans lan vin bearish - efase tout OB bullish ki kont li kounye a
+    if array.size(bullOBs) > 0
+        for i = array.size(bullOBs) - 1 to 0
+            box.delete(array.get(bullOBs, i))
+        array.clear(bullOBs)
 
-# Trace dènye FVG yo sou Grafik la
-for fvg in fvgs[-15:]:
-    color = "rgba(0, 255, 0, 0.25)" if fvg['Type'] == 'Bullish FVG' else "rgba(255, 0, 0, 0.25)"
-    fig.add_shape(
-        type="rect",
-        x0=fvg['Start_Time'], y0=fvg['Bottom'],
-        x1=df.index[-1], y1=fvg['Top'],
-        fillcolor=color,
-        line=dict(width=0),
-        name=fvg['Type']
-    )
+if isCHoCHUp
+    label.new(bar_index, low, "CHoCH", style=label.style_label_up, color=color.new(color.lime, 0), textcolor=color.black, size=size.small, yloc=yloc.belowbar)
+if isBOSUp
+    label.new(bar_index, low, "BOS", style=label.style_label_up, color=color.new(color.green, 60), textcolor=color.white, size=size.tiny, yloc=yloc.belowbar)
+if isCHoCHDown
+    label.new(bar_index, high, "CHoCH", style=label.style_label_down, color=color.new(color.red, 0), textcolor=color.white, size=size.small, yloc=yloc.abovebar)
+if isBOSDown
+    label.new(bar_index, high, "BOS", style=label.style_label_down, color=color.new(color.maroon, 60), textcolor=color.white, size=size.tiny, yloc=yloc.abovebar)
 
-fig.update_layout(
-    title=f"Analiz SMC pou {symbol} ({interval})",
-    xaxis_title="Dat / Lè",
-    yaxis_title="Pri",
-    template="plotly_dark",
-    xaxis_rangeslider_visible=False,
-    height=600
-)
+// ================= ORDER BLOCK =================
+findBullOB() =>
+    float top = na
+    float bot = na
+    for i = 1 to obLookback
+        if close[i] < open[i]
+            top := math.max(open[i], close[i])
+            bot := low[i]
+            break
+    [top, bot]
 
-st.plotly_chart(fig, use_container_width=True)
+findBearOB() =>
+    float top = na
+    float bot = na
+    for i = 1 to obLookback
+        if close[i] > open[i]
+            top := high[i]
+            bot := math.min(open[i], close[i])
+            break
+    [top, bot]
 
-# -------------------------------------------------------------
-# TABLO STATISTIK AK REZIME
-# -------------------------------------------------------------
-col1, col2 = st.columns(2)
+if brokeUp
+    [t, b] = findBullOB()
+    if not na(t)
+        newBullBox = box.new(bar_index - 1, t, bar_index + 30, b, border_color=color.green, bgcolor=color.new(color.green, 85))
+        array.push(bullOBs, newBullBox)
+        if array.size(bullOBs) > maxOB
+            box.delete(array.shift(bullOBs))
 
-with col1:
-    st.subheader("🔥 Dènye Fair Value Gaps (FVG)")
-    if fvgs:
-        st.dataframe(pd.DataFrame(fvgs).tail(5), use_container_width=True)
-    else:
-        st.info("Pa gen FVG detekte.")
+if brokeDown
+    [t2, b2] = findBearOB()
+    if not na(t2)
+        newBearBox = box.new(bar_index - 1, t2, bar_index + 30, b2, border_color=color.red, bgcolor=color.new(color.red, 85))
+        array.push(bearOBs, newBearBox)
+        if array.size(bearOBs) > maxOB
+            box.delete(array.shift(bearOBs))
 
-with col2:
-    st.subheader("📦 Dènye Order Blocks (OB)")
-    if obs:
-        st.dataframe(pd.DataFrame(obs).tail(5), use_container_width=True)
-    else:
-        st.info("Pa gen OB detekte.")
+// Efase OB lè pri a travèse l nèt (mitigation)
+if array.size(bullOBs) > 0
+    for i = array.size(bullOBs) - 1 to 0
+        bx = array.get(bullOBs, i)
+        if close < box.get_bottom(bx)
+            box.delete(bx)
+            array.remove(bullOBs, i)
+        else
+            box.set_right(bx, bar_index + 30)
+
+if array.size(bearOBs) > 0
+    for i = array.size(bearOBs) - 1 to 0
+        bx = array.get(bearOBs, i)
+        if close > box.get_top(bx)
+            box.delete(bx)
+            array.remove(bearOBs, i)
+        else
+            box.set_right(bx, bar_index + 30)
+
+// ================= FAIR VALUE GAP (FVG) =================
+var array<box> bullFVGs = array.new<box>()
+var array<box> bearFVGs = array.new<box>()
+
+bullFVG = showFVG and trend == "bullish" and low > high[2]
+bearFVG = showFVG and trend == "bearish" and high < low[2]
+
+if bullFVG
+    fvgBox = box.new(bar_index - 2, low, bar_index + 20, high[2], border_color=color.blue, bgcolor=color.new(color.blue, 88), border_style=line.style_dashed)
+    array.push(bullFVGs, fvgBox)
+    if array.size(bullFVGs) > maxFVG
+        box.delete(array.shift(bullFVGs))
+
+if bearFVG
+    fvgBox2 = box.new(bar_index - 2, low[2], bar_index + 20, high, border_color=color.purple, bgcolor=color.new(color.purple, 88), border_style=line.style_dashed)
+    array.push(bearFVGs, fvgBox2)
+    if array.size(bearFVGs) > maxFVG
+        box.delete(array.shift(bearFVGs))
+
+// Efase FVG lè pri a ranpli gap la nèt
+if array.size(bullFVGs) > 0
+    for i = array.size(bullFVGs) - 1 to 0
+        bx = array.get(bullFVGs, i)
+        if close < box.get_bottom(bx)
+            box.delete(bx)
+            array.remove(bullFVGs, i)
+        else
+            box.set_right(bx, bar_index + 20)
+
+if array.size(bearFVGs) > 0
+    for i = array.size(bearFVGs) - 1 to 0
+        bx = array.get(bearFVGs, i)
+        if close > box.get_top(bx)
+            box.delete(bx)
+            array.remove(bearFVGs, i)
+        else
+            box.set_right(bx, bar_index + 20)
+
+// ================= LIQUIDITY POOLS (Equal Highs/Lows) =================
+var array<line> liqLines = array.new<line>()
+
+if showLiq and not na(swingHigh) and not na(prevSH)
+    tolH = atrVal * liqTolPct
+    if math.abs(swingHigh - prevSH) <= tolH
+        lnH = line.new(bar_index - swingLen - 5, swingHigh, bar_index + 10, swingHigh, color=color.orange, width=1, style=line.style_dotted)
+        array.push(liqLines, lnH)
+        if array.size(liqLines) > 6
+            line.delete(array.shift(liqLines))
+
+if showLiq and not na(swingLow) and not na(prevSL)
+    tolL = atrVal * liqTolPct
+    if math.abs(swingLow - prevSL) <= tolL
+        lnL = line.new(bar_index - swingLen - 5, swingLow, bar_index + 10, swingLow, color=color.aqua, width=1, style=line.style_dotted)
+        array.push(liqLines, lnL)
+        if array.size(liqLines) > 6
+            line.delete(array.shift(liqLines))
+
+// ================= TANDANS BIG TIMEFRAME (HTF BIAS) =================
+htf1Close = request.security(syminfo.tickerid, htf1, close, lookahead=barmerge.lookahead_off)
+htf1EMA   = request.security(syminfo.tickerid, htf1, ta.ema(close, 50), lookahead=barmerge.lookahead_off)
+htf2Close = request.security(syminfo.tickerid, htf2, close, lookahead=barmerge.lookahead_off)
+htf2EMA   = request.security(syminfo.tickerid, htf2, ta.ema(close, 50), lookahead=barmerge.lookahead_off)
+
+htf1Bias = htf1Close > htf1EMA ? "Bullish" : "Bearish"
+htf2Bias = htf2Close > htf2EMA ? "Bullish" : "Bearish"
+
+// ================= DASHBOARD =================
+var table dash = table.new(position.top_right, 2, 5, bgcolor=color.new(color.black, 20), border_width=1, border_color=color.gray)
+
+if barstate.islast
+    table.cell(dash, 0, 0, "SMC Dashboard", text_color=color.white, bgcolor=color.new(color.blue, 40), text_size=size.small)
+    table.cell(dash, 1, 0, syminfo.ticker, text_color=color.white, bgcolor=color.new(color.blue, 40), text_size=size.small)
+
+    table.cell(dash, 0, 1, "Tandans (chart)", text_color=color.white, text_size=size.small)
+    table.cell(dash, 1, 1, trend == "bullish" ? "Bullish ↑" : trend == "bearish" ? "Bearish ↓" : "Neutral", text_color=trend == "bullish" ? color.lime : trend == "bearish" ? color.red : color.gray, text_size=size.small)
+
+    table.cell(dash, 0, 2, "Bias " + htf1, text_color=color.white, text_size=size.small)
+    table.cell(dash, 1, 2, htf1Bias, text_color=htf1Bias == "Bullish" ? color.lime : color.red, text_size=size.small)
+
+    table.cell(dash, 0, 3, "Bias " + htf2, text_color=color.white, text_size=size.small)
+    table.cell(dash, 1, 3, htf2Bias, text_color=htf2Bias == "Bullish" ? color.lime : color.red, text_size=size.small)
+
+    table.cell(dash, 0, 4, "OB Aktif (Buy/Sell)", text_color=color.white, text_size=size.small)
+    table.cell(dash, 1, 4, str.tostring(array.size(bullOBs)) + " / " + str.tostring(array.size(bearOBs)), text_color=color.yellow, text_size=size.small)
+
+// ================= ALÈT =================
+alertcondition(isCHoCHUp, "CHoCH Bullish", "{{ticker}}: CHoCH bullish detekte - tandans chanje anlè")
+alertcondition(isCHoCHDown, "CHoCH Bearish", "{{ticker}}: CHoCH bearish detekte - tandans chanje anba")
+alertcondition(bullFVG, "Nouvo FVG Bullish", "{{ticker}}: Nouvo Fair Value Gap bullish fòme")
+alertcondition(bearFVG, "Nouvo FVG Bearish", "{{ticker}}: Nouvo Fair Value Gap bearish fòme")
