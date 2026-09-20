@@ -53,6 +53,17 @@ def deriv_connect(token, app_id, account_id):
     return ws
 
 
+def deriv_list_options_accounts(token, app_id):
+    resp = requests.get(
+        "https://api.derivws.com/trading/v1/options/accounts",
+        headers={"Authorization": f"Bearer {token}", "Deriv-App-ID": app_id},
+        timeout=10,
+    )
+    if resp.status_code >= 400:
+        raise RuntimeError(f"Erè ({resp.status_code}): {resp.text[:300]}")
+    return resp.json()
+
+
 def deriv_buy(ws, symbol, direction, stake, multiplier):
     contract_type = "MULTUP" if direction == "ACHTE" else "MULTDOWN"
     request = {
@@ -226,10 +237,24 @@ for key, default in [
 
 deriv_token = st.sidebar.text_input("Deriv API Token (PAT, Demo)", type="password")
 deriv_app_id = st.sidebar.text_input("Deriv App ID", help="Jwenn li sou developers.deriv.com → Dashboard → App yo.")
-deriv_account_id = st.sidebar.text_input(
-    "Deriv Account ID (Login)",
-    help="Egzanp: VRTC12345678 — nimewo kont demo w la, ou wè l sou app.deriv.com oswa MT5."
+
+deriv_find_accounts = st.sidebar.button(
+    "📋 Jwenn Account ID Options", disabled=not (deriv_token and deriv_app_id)
 )
+if deriv_find_accounts:
+    with st.sidebar:
+        with st.spinner("Ap chèche kont Options ou yo..."):
+            try:
+                accounts_data = deriv_list_options_accounts(deriv_token, deriv_app_id)
+                st.json(accounts_data)
+            except Exception as e:
+                st.error(f"❌ Erè: {e}")
+
+deriv_account_id = st.sidebar.text_input(
+    "Deriv Account ID (Options)",
+    help="Kole ID kont demo ou jwenn ak bouton anwo a (pa VRTC... — se yon lòt ID pou sistèm Options la)."
+)
+
 deriv_symbol = st.sidebar.text_input(
     "Senbòl Deriv",
     value=DERIV_SYMBOL_MAP.get(symbol, ""),
