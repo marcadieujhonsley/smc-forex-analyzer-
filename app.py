@@ -59,6 +59,96 @@ def deriv_sell(ws, contract_id):
     resp = deriv_send_recv(ws, {"sell": contract_id, "price": 0}, "sell")
     return resp["sell"]
 
+# -------------------------------------------------------------
+# MT5 — FONKSYON KONEKSYON AK TRANZAKSYON (SÈLMAN SI KOURI LOKAL SOU WINDOWS)
+# -------------------------------------------------------------
+try:
+    import MetaTrader5 as mt5
+    MT5_AVAILABLE = True
+except ImportError:
+    MT5_AVAILABLE = False
+
+
+def mt5_place_order(symbol, direction, lot):
+    order_type = mt5.ORDER_TYPE_BUY if direction == "ACHTE" else mt5.ORDER_TYPE_SELL
+    tick = mt5.symbol_info_tick(symbol)
+    price = tick.ask if direction == "ACHTE" else tick.bid
+    request = {
+        "action": mt5.TRADE_ACTION_DEAL,
+        "symbol": symbol,
+        "volume": lot,
+        "type": order_type,
+        "price": price,
+        "deviation": 10,
+        "magic": 234000,
+        "comment": "bot-smc-dashboard",
+        "type_time": mt5.ORDER_TIME_GTC,
+        "type_filling": mt5.ORDER_FILLING_IOC,
+    }
+    return mt5.order_send(request)
+
+
+def mt5_close_order(ticket, symbol, direction, lot):
+    close_type = mt5.ORDER_TYPE_SELL if direction == "ACHTE" else mt5.ORDER_TYPE_BUY
+    tick = mt5.symbol_info_tick(symbol)
+    price = tick.bid if direction == "ACHTE" else tick.ask
+    request = {
+        "action": mt5.TRADE_ACTION_DEAL,
+        "symbol": symbol,
+        "volume": lot,
+        "type": close_type,
+        "position": ticket,
+        "price": price,
+        "deviation": 10,
+        "magic": 234000,
+        "comment": "bot-smc-close",
+        "type_time": mt5.ORDER_TIME_GTC,
+        "type_filling": mt5.ORDER_FILLING_IOC,
+    }
+    return mt5.order_send(request)
+
+# -------------------------------------------------------------
+# METAAPI — MT5 NAN NWAJ (FONKSYONE SOU STREAMLIT CLOUD TOU)
+# -------------------------------------------------------------
+import asyncio
+try:
+    from metaapi_cloud_sdk import MetaApi
+    METAAPI_AVAILABLE = True
+except ImportError:
+    METAAPI_AVAILABLE = False
+
+
+async def _metaapi_get_connection(token, account_id):
+    api = MetaApi(token)
+    account = await api.metatrader_account_api.get_account(account_id)
+    if account.state not in ("DEPLOYED", "DEPLOYING"):
+        await account.deploy()
+    await account.wait_connected()
+    connection = account.get_rpc_connection()
+    await connection.connect()
+    await connection.wait_synchronized()
+    return connection
+
+
+async def _metaapi_place_order(token, account_id, symbol, direction, volume):
+    connection = await _metaapi_get_connection(token, account_id)
+    if direction == "ACHTE":
+        return await connection.create_market_buy_order(symbol, volume)
+    return await connection.create_market_sell_order(symbol, volume)
+
+
+async def _metaapi_close_position(token, account_id, position_id):
+    connection = await _metaapi_get_connection(token, account_id)
+    return await connection.close_position(position_id)
+
+
+def metaapi_place_order(token, account_id, symbol, direction, volume):
+    return asyncio.run(_metaapi_place_order(token, account_id, symbol, direction, volume))
+
+
+def metaapi_close_position(token, account_id, position_id):
+    return asyncio.run(_metaapi_close_position(token, account_id, position_id))
+
 
 # -------------------------------------------------------------
 # KONFIGIRASYON PAJ LA
@@ -160,6 +250,111 @@ if stop_clicked:
     st.session_state.deriv_ws = None
     st.session_state.open_contract_id = None
     st.session_state.last_signal_acted = None
+
+# -------------------------------------------------------------
+# SIDEBAR — BOT TRADING (MT5 LOKAL)
+# -------------------------------------------------------------
+st.sidebar.divider()
+st.sidebar.header("🖥️ Bot Trading (MT5 Lokal)")
+
+if not MT5_AVAILABLE:
+    st.sidebar.warning(
+        "MT5 pa disponib nan anviwònman sa a. Sa mache sèlman lè app la ap kouri "
+        "lokalman sou Windows, sou menm laptop kote Terminal MT5 la enstale."
+    )
+else:
+    for key, default in [
+        ("mt5_running", False), ("mt5_open_ticket", None),
+        ("mt5_last_signal_acted", None), ("mt5_trade_log", []),
+    ]:
+        if key not in st.session_state:
+            st.session_state[key] = default
+
+    mt5_login = st.sidebar.number_input("Nimewo Kont MT5", min_value=0, step=1, value=0)
+    mt5_password = st.sidebar.text_input("Modpas MT5", type="password")
+    mt5_server = st.sidebar.text_input("Sèvè MT5", value="Deriv-Demo")
+    mt5_symbol = st.sidebar.text_input("Senbòl MT5", value="GBPUSD")
+    mt5_lot = st.sidebar.number_input("Lo (lot size)", min_value=0.01, value=0.01, step=0.01)
+
+    mcol1, mcol2 = st.sidebar.columns(2)
+    mt5_start = mcol1.button("▶️ Lanse MT5", disabled=st.session_state.mt5_running)
+    mt5_stop = mcol2.button("⏹️ Fèmen MT5", disabled=not st.session_state.mt5_running)
+
+    if mt5_start:
+        if mt5.initialize(login=int(mt5_login), password=mt5_password, server=mt5_server):
+            account_info = mt5.account_info()
+            if account_info is not None and account_info.trade_mode == mt5.ACCOUNT_TRADE_MODE_DEMO:
+                st.session_state.mt5_running = True
+                st.sidebar.success(f"Konekte sou MT5 demo ({account_info.login}) ✅")
+            else:
+                st.sidebar.error("⚠️ Sa a pa sanble yon kont demo. Bot la pa lanse pou sekirite w.")
+                mt5.shutdown()
+        else:
+            st.sidebar.error(f"Erè koneksyon MT5: {mt5.last_error()}")
+
+    if mt5_stop:
+        if st.session_state.mt5_open_ticket:
+            try:
+                mt5_close_order(st.session_state.mt5_open_ticket, mt5_symbol,
+                                 st.session_state.mt5_last_signal_acted, mt5_lot)
+                st.session_state.mt5_trade_log.append(
+                    f"Fèmen pozisyon MT5 (tikè {st.session_state.mt5_open_ticket}) — bot fèmen manyèlman"
+                )
+            except Exception as e:
+                st.sidebar.warning(f"Pa t ka fèmen pozisyon MT5 ouvè a: {e}")
+        mt5.shutdown()
+        st.session_state.mt5_running = False
+        st.session_state.mt5_open_ticket = None
+        st.session_state.mt5_last_signal_acted = None
+
+# -------------------------------------------------------------
+# SIDEBAR — BOT TRADING (METAAPI CLOUD — MT5 SAN LAPTOP LIMEN)
+# -------------------------------------------------------------
+st.sidebar.divider()
+st.sidebar.header("☁️ Bot Trading (MT5 via MetaApi)")
+
+if not METAAPI_AVAILABLE:
+    st.sidebar.warning("Pake 'metaapi-cloud-sdk' pa enstale. Ajoute l nan requirements.txt.")
+else:
+    st.sidebar.caption("Sèvi ak API Token ak Account ID ou jwenn sou app.metaapi.cloud.")
+
+    for key, default in [
+        ("metaapi_running", False), ("metaapi_open_position", None),
+        ("metaapi_last_signal_acted", None), ("metaapi_trade_log", []),
+    ]:
+        if key not in st.session_state:
+            st.session_state[key] = default
+
+    metaapi_token = st.sidebar.text_input("MetaApi API Token", type="password")
+    metaapi_account_id = st.sidebar.text_input("MetaApi Account ID")
+    metaapi_symbol = st.sidebar.text_input("Senbòl MT5 (MetaApi)", value="EURUSD")
+    metaapi_volume = st.sidebar.number_input("Volim (lot)", min_value=0.01, value=0.01, step=0.01)
+
+    macol1, macol2 = st.sidebar.columns(2)
+    metaapi_start = macol1.button(
+        "▶️ Lanse", key="metaapi_start_btn",
+        disabled=st.session_state.metaapi_running or not metaapi_token or not metaapi_account_id
+    )
+    metaapi_stop = macol2.button(
+        "⏹️ Fèmen", key="metaapi_stop_btn", disabled=not st.session_state.metaapi_running
+    )
+
+    if metaapi_start:
+        st.session_state.metaapi_running = True
+        st.sidebar.success("Bot MetaApi aktive — l ap konekte epi aji nan pwochen sik (60s) la.")
+
+    if metaapi_stop:
+        if st.session_state.metaapi_open_position:
+            try:
+                metaapi_close_position(metaapi_token, metaapi_account_id, st.session_state.metaapi_open_position)
+                st.session_state.metaapi_trade_log.append(
+                    f"Fèmen pozisyon MetaApi {st.session_state.metaapi_open_position} — bot fèmen manyèlman"
+                )
+            except Exception as e:
+                st.sidebar.warning(f"Pa t ka fèmen pozisyon MetaApi: {e}")
+        st.session_state.metaapi_running = False
+        st.session_state.metaapi_open_position = None
+        st.session_state.metaapi_last_signal_acted = None
 
 # -------------------------------------------------------------
 # TELECHAJE DONE
@@ -402,9 +597,94 @@ else:
     st.info("Bot la fèmen — klike 'Lanse' nan sidebar la pou kòmanse.")
 
 if st.session_state.trade_log:
-    with st.expander("📜 Istorik Tranzaksyon (sesyon sa a)"):
+    with st.expander("📜 Istorik Tranzaksyon Deriv (sesyon sa a)"):
         for entry in reversed(st.session_state.trade_log[-20:]):
             st.write(entry)
+
+# -------------------------------------------------------------
+# BOT MT5 — DESIZYON OTOMATIK
+# -------------------------------------------------------------
+if MT5_AVAILABLE and st.session_state.get("mt5_running"):
+    try:
+        if st.session_state.mt5_open_ticket is None:
+            if clear_signal in ("ACHTE", "VANN") and clear_signal != st.session_state.mt5_last_signal_acted:
+                result = mt5_place_order(mt5_symbol, clear_signal, mt5_lot)
+                if result is not None and result.retcode == mt5.TRADE_RETCODE_DONE:
+                    st.session_state.mt5_open_ticket = result.order
+                    st.session_state.mt5_last_signal_acted = clear_signal
+                    st.session_state.mt5_trade_log.append(
+                        f"{df.index[-1]} — Louvri {clear_signal} sou {mt5_symbol} (tikè {result.order})"
+                    )
+                else:
+                    st.sidebar.error(f"Erè lòd MT5: {getattr(result, 'comment', 'echèk')}")
+        else:
+            if clear_signal != st.session_state.mt5_last_signal_acted:
+                mt5_close_order(st.session_state.mt5_open_ticket, mt5_symbol,
+                                 st.session_state.mt5_last_signal_acted, mt5_lot)
+                st.session_state.mt5_trade_log.append(
+                    f"{df.index[-1]} — Fèmen pozisyon MT5 (tikè {st.session_state.mt5_open_ticket})"
+                )
+                st.session_state.mt5_open_ticket = None
+                st.session_state.mt5_last_signal_acted = None
+    except Exception as e:
+        st.sidebar.error(f"⚠️ Erè bot MT5: {e}")
+
+if MT5_AVAILABLE:
+    st.subheader("🖥️ Estati Bot MT5")
+    if st.session_state.get("mt5_running"):
+        st.success("Bot MT5 ap kouri (kont demo) ✅")
+        if st.session_state.mt5_open_ticket:
+            st.write(f"Pozisyon ouvè: tikè `{st.session_state.mt5_open_ticket}` ({st.session_state.mt5_last_signal_acted})")
+        else:
+            st.write("Pa gen pozisyon ouvè kounye a — ap tann yon siyal.")
+    else:
+        st.info("Bot MT5 fèmen — klike 'Lanse MT5' nan sidebar la pou kòmanse.")
+
+    if st.session_state.get("mt5_trade_log"):
+        with st.expander("📜 Istorik Tranzaksyon MT5 (sesyon sa a)"):
+            for entry in reversed(st.session_state.mt5_trade_log[-20:]):
+                st.write(entry)
+
+# -------------------------------------------------------------
+# BOT METAAPI — DESIZYON OTOMATIK
+# -------------------------------------------------------------
+if METAAPI_AVAILABLE and st.session_state.get("metaapi_running"):
+    try:
+        if st.session_state.metaapi_open_position is None:
+            if clear_signal in ("ACHTE", "VANN") and clear_signal != st.session_state.metaapi_last_signal_acted:
+                result = metaapi_place_order(metaapi_token, metaapi_account_id, metaapi_symbol, clear_signal, metaapi_volume)
+                position_id = result.get("positionId") or result.get("orderId")
+                st.session_state.metaapi_open_position = position_id
+                st.session_state.metaapi_last_signal_acted = clear_signal
+                st.session_state.metaapi_trade_log.append(
+                    f"{df.index[-1]} — Louvri {clear_signal} sou {metaapi_symbol} (pozisyon {position_id})"
+                )
+        else:
+            if clear_signal != st.session_state.metaapi_last_signal_acted:
+                metaapi_close_position(metaapi_token, metaapi_account_id, st.session_state.metaapi_open_position)
+                st.session_state.metaapi_trade_log.append(
+                    f"{df.index[-1]} — Fèmen pozisyon MetaApi ({st.session_state.metaapi_open_position})"
+                )
+                st.session_state.metaapi_open_position = None
+                st.session_state.metaapi_last_signal_acted = None
+    except Exception as e:
+        st.sidebar.error(f"⚠️ Erè bot MetaApi: {e}")
+
+if METAAPI_AVAILABLE:
+    st.subheader("☁️ Estati Bot MetaApi (MT5 Cloud)")
+    if st.session_state.get("metaapi_running"):
+        st.success("Bot MetaApi ap kouri ✅")
+        if st.session_state.metaapi_open_position:
+            st.write(f"Pozisyon ouvè: `{st.session_state.metaapi_open_position}` ({st.session_state.metaapi_last_signal_acted})")
+        else:
+            st.write("Pa gen pozisyon ouvè kounye a — ap tann yon siyal.")
+    else:
+        st.info("Bot MetaApi fèmen — klike 'Lanse' nan sidebar la pou kòmanse.")
+
+    if st.session_state.get("metaapi_trade_log"):
+        with st.expander("📜 Istorik Tranzaksyon MetaApi (sesyon sa a)"):
+            for entry in reversed(st.session_state.metaapi_trade_log[-20:]):
+                st.write(entry)
 
 st.divider()
 
