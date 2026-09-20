@@ -4,3 +4,4 @@ pandas
 plotly
 streamlit-autorefresh
 websocket-client
+metaapi-cloud-sdk
