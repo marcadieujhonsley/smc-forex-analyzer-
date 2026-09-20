@@ -2,7 +2,63 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import plotly.graph_objects as go
+import json
+import websocket
 from streamlit_autorefresh import st_autorefresh
+
+# -------------------------------------------------------------
+# DERIV API — FONKSYON KONEKSYON AK TRANZAKSYON (KONT DEMO)
+# -------------------------------------------------------------
+DERIV_SYMBOL_MAP = {
+    "EURUSD=X": "frxEURUSD",
+    "GBPUSD=X": "frxGBPUSD",
+    "USDJPY=X": "frxUSDJPY",
+    "AUDUSD=X": "frxAUDUSD",
+    "GC=F": "frxXAUUSD",
+    "BTC-USD": "cryBTCUSD",
+}
+
+
+def deriv_send_recv(ws, request, expected_msg_type=None, timeout=10):
+    ws.settimeout(timeout)
+    ws.send(json.dumps(request))
+    while True:
+        raw = ws.recv()
+        data = json.loads(raw)
+        if data.get("error"):
+            raise RuntimeError(data["error"].get("message", "Erè Deriv API"))
+        if expected_msg_type is None or data.get("msg_type") == expected_msg_type:
+            return data
+
+
+def deriv_connect(token):
+    ws = websocket.create_connection("wss://ws.derivws.com/websockets/v3?app_id=1089", timeout=10)
+    auth = deriv_send_recv(ws, {"authorize": token}, "authorize")
+    return ws, auth["authorize"]
+
+
+def deriv_buy(ws, symbol, direction, stake, multiplier):
+    contract_type = "MULTUP" if direction == "ACHTE" else "MULTDOWN"
+    request = {
+        "buy": 1,
+        "price": stake,
+        "parameters": {
+            "amount": stake,
+            "basis": "stake",
+            "contract_type": contract_type,
+            "currency": "USD",
+            "multiplier": multiplier,
+            "symbol": symbol,
+        },
+    }
+    resp = deriv_send_recv(ws, request, "buy")
+    return resp["buy"]["contract_id"]
+
+
+def deriv_sell(ws, contract_id):
+    resp = deriv_send_recv(ws, {"sell": contract_id, "price": 0}, "sell")
+    return resp["sell"]
+
 
 # -------------------------------------------------------------
 # KONFIGIRASYON PAJ LA
@@ -44,6 +100,66 @@ swing_window = st.sidebar.slider(
     min_value=3, max_value=10, value=5,
     help="Yon chif ba detekte plis kase estrikti (plis siyal, plis bri). Yon chif wo detekte sèlman gwo kase yo."
 )
+
+# -------------------------------------------------------------
+# SIDEBAR — BOT TRADING (DERIV DEMO)
+# -------------------------------------------------------------
+st.sidebar.divider()
+st.sidebar.header("🤖 Bot Trading (Deriv Demo)")
+st.sidebar.caption(
+    "Kreye yon API token sou app.deriv.com → Settings → API token (dwa 'Trade'), "
+    "sou yon KONT DEMO (Virtual Money) — PA sou kont reyèl ou."
+)
+
+for key, default in [
+    ("bot_running", False), ("deriv_ws", None), ("open_contract_id", None),
+    ("last_signal_acted", None), ("trade_log", []),
+]:
+    if key not in st.session_state:
+        st.session_state[key] = default
+
+deriv_token = st.sidebar.text_input("Deriv API Token (Demo)", type="password")
+deriv_symbol = st.sidebar.text_input(
+    "Senbòl Deriv",
+    value=DERIV_SYMBOL_MAP.get(symbol, ""),
+    help="Egzanp: frxEURUSD, frxXAUUSD, cryBTCUSD. Verifye li koresponn ak pè ou chwazi anwo a."
+)
+stake = st.sidebar.number_input("Estak pa tranzaksyon (USD demo)", min_value=1.0, value=10.0, step=1.0)
+multiplier = st.sidebar.number_input("Miltipliyè", min_value=5, max_value=1000, value=100, step=5)
+
+bcol1, bcol2 = st.sidebar.columns(2)
+start_clicked = bcol1.button("▶️ Lanse", disabled=st.session_state.bot_running or not deriv_token)
+stop_clicked = bcol2.button("⏹️ Fèmen", disabled=not st.session_state.bot_running)
+
+if start_clicked:
+    try:
+        ws, account_info = deriv_connect(deriv_token)
+        if account_info.get("is_virtual") != 1:
+            st.sidebar.error("⚠️ Sa a se yon KONT REYÈL, pa yon kont demo. Bot la pa lanse pou sekirite w.")
+            ws.close()
+        else:
+            st.session_state.deriv_ws = ws
+            st.session_state.bot_running = True
+            st.sidebar.success(f"Konekte sou kont demo ({account_info.get('loginid')}) ✅")
+    except Exception as e:
+        st.sidebar.error(f"Erè koneksyon Deriv: {e}")
+
+if stop_clicked:
+    if st.session_state.open_contract_id and st.session_state.deriv_ws:
+        try:
+            deriv_sell(st.session_state.deriv_ws, st.session_state.open_contract_id)
+            st.session_state.trade_log.append(f"Fèmen pozisyon {st.session_state.open_contract_id} (bot fèmen manyèlman)")
+        except Exception as e:
+            st.sidebar.warning(f"Pa t ka fèmen pozisyon ouvè a: {e}")
+    if st.session_state.deriv_ws:
+        try:
+            st.session_state.deriv_ws.close()
+        except Exception:
+            pass
+    st.session_state.bot_running = False
+    st.session_state.deriv_ws = None
+    st.session_state.open_contract_id = None
+    st.session_state.last_signal_acted = None
 
 # -------------------------------------------------------------
 # TELECHAJE DONE
@@ -248,6 +364,47 @@ elif clear_signal == "VANN":
     st.error(f"🔴 **SIYAL VANN** — pri a ({last_price:.5f}) nan yon zòn Bearish valab (Premium), EMA200 ak estrikti dakò.")
 else:
     st.info("⏳ **AP TANN** — kondisyon yo poko reyini (tandans EMA200, estrikti, ak yon zòn valab dwe dakò tout ansanm).")
+
+# -------------------------------------------------------------
+# BOT — DESIZYON OTOMATIK (Lachte/Vann Deriv Demo)
+# -------------------------------------------------------------
+if st.session_state.bot_running and st.session_state.deriv_ws:
+    ws = st.session_state.deriv_ws
+    try:
+        if st.session_state.open_contract_id is None:
+            if clear_signal in ("ACHTE", "VANN") and clear_signal != st.session_state.last_signal_acted:
+                contract_id = deriv_buy(ws, deriv_symbol, clear_signal, stake, multiplier)
+                st.session_state.open_contract_id = contract_id
+                st.session_state.last_signal_acted = clear_signal
+                st.session_state.trade_log.append(
+                    f"{df.index[-1]} — Louvri {clear_signal} sou {deriv_symbol} (kontra {contract_id})"
+                )
+        else:
+            if clear_signal != st.session_state.last_signal_acted:
+                result = deriv_sell(ws, st.session_state.open_contract_id)
+                st.session_state.trade_log.append(
+                    f"{df.index[-1]} — Fèmen pozisyon (kontra {st.session_state.open_contract_id}), "
+                    f"rezilta: {result.get('sold_for', 'N/A')} USD"
+                )
+                st.session_state.open_contract_id = None
+                st.session_state.last_signal_acted = None
+    except Exception as e:
+        st.sidebar.error(f"⚠️ Erè bot pandan tranzaksyon: {e}")
+
+st.subheader("🤖 Estati Bot")
+if st.session_state.bot_running:
+    st.success("Bot ap kouri (kont demo) ✅")
+    if st.session_state.open_contract_id:
+        st.write(f"Pozisyon ouvè: kontra `{st.session_state.open_contract_id}` ({st.session_state.last_signal_acted})")
+    else:
+        st.write("Pa gen pozisyon ouvè kounye a — ap tann yon siyal.")
+else:
+    st.info("Bot la fèmen — klike 'Lanse' nan sidebar la pou kòmanse.")
+
+if st.session_state.trade_log:
+    with st.expander("📜 Istorik Tranzaksyon (sesyon sa a)"):
+        for entry in reversed(st.session_state.trade_log[-20:]):
+            st.write(entry)
 
 st.divider()
 
