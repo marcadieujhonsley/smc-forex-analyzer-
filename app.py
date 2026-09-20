@@ -228,6 +228,30 @@ best_bull, bull_valid_ctx = pick_best(bullish_zones)
 best_bear, bear_valid_ctx = pick_best(bearish_zones)
 
 # -------------------------------------------------------------
+# SIYAL KLÈ (ACHTE / VANN / AP TANN) — apa, kèlkeswa timeframe
+# -------------------------------------------------------------
+
+def price_in_zone(zone):
+    return zone is not None and zone["Bottom"] <= last_price <= zone["Top"]
+
+clear_signal = None
+if ema_dir == structure_trend:
+    if ema_dir == "bullish" and bull_valid_ctx and price_in_zone(best_bull):
+        clear_signal = "ACHTE"
+    elif ema_dir == "bearish" and bear_valid_ctx and price_in_zone(best_bear):
+        clear_signal = "VANN"
+
+st.markdown("## 🚦 Siyal Klè")
+if clear_signal == "ACHTE":
+    st.success(f"🟢 **SIYAL ACHTE** — pri a ({last_price:.5f}) nan yon zòn Bullish valab (Discount), EMA200 ak estrikti dakò.")
+elif clear_signal == "VANN":
+    st.error(f"🔴 **SIYAL VANN** — pri a ({last_price:.5f}) nan yon zòn Bearish valab (Premium), EMA200 ak estrikti dakò.")
+else:
+    st.info("⏳ **AP TANN** — kondisyon yo poko reyini (tandans EMA200, estrikti, ak yon zòn valab dwe dakò tout ansanm).")
+
+st.divider()
+
+# -------------------------------------------------------------
 # TABLO REZIME RAPID
 # -------------------------------------------------------------
 last_event = structure_events[-1] if structure_events else None
@@ -288,7 +312,11 @@ fig.update_layout(
     template="plotly_dark", xaxis_rangeslider_visible=False, height=650
 )
 
+if len(df) > 100:
+    fig.update_xaxes(range=[df.index[-100], df.index[-1]])
+
 st.plotly_chart(fig, use_container_width=True)
+st.caption("🔍 Chart la ouvri zoome sou dènye bouji yo — dezoome (sourit/dwèt, oswa double-klike) pou wè tout istwa a.")
 
 # -------------------------------------------------------------
 # DASHBOARD SIYAL
