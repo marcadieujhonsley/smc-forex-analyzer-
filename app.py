@@ -1,32 +1,41 @@
 import streamlit as st
-import MetaTrader5 as mt5
 import pandas as pd
 
-# ---------------------------------------------------------
-# CONFIGURATION PAJ LA
-# ---------------------------------------------------------
-st.set_page_config(page_title="SMC Bot Execution", layout="wide")
-st.title("🤖 SMC Forex Bot - Konèksyon Zòn MT5")
+# Try-except pou anpeche Streamlit Cloud kraze (crash)
+try:
+    import MetaTrader5 as mt5
+    MT5_AVAILABLE = True
+except ImportError:
+    MT5_AVAILABLE = False
+
+st.set_page_config(page_title="SMC Forex Bot", layout="wide")
+st.title("🤖 SMC Forex Bot Execution")
 
 # ---------------------------------------------------------
-# KONEKSYON AUTOMATIK AK METATRADER 5 SOU PC
+# DETEKSYON ANVIWÒNMAN (PC LOKAL VOR CLOUD)
 # ---------------------------------------------------------
-if not mt5.initialize():
-    st.sidebar.error("❌ MT5 pa louvri sou PC a. Souple louvri MT5!")
+if MT5_AVAILABLE:
+    st.sidebar.success("💻 Kòd la ap kouri sou PC lokal")
+    if not mt5.initialize():
+        st.sidebar.error("❌ MT5 pa louvri sou PC a. Souple louvri lojisyèl MT5 la!")
+    else:
+        acc = mt5.account_info()
+        if acc:
+            st.sidebar.write(f"**Kont:** {acc.login}")
+            st.sidebar.write(f"**Solde:** ${acc.balance:.2f}")
 else:
-    account_info = mt5.account_info()
-    if account_info is not None:
-        st.sidebar.success("✅ Konekte ak MT5 sou PC!")
-        st.sidebar.write(f"**Kont:** {account_info.login}")
-        st.sidebar.write(f"**Sèvè:** {account_info.server}")
-        st.sidebar.write(f"**Solde (Balance):** ${account_info.balance:.2f}")
+    st.sidebar.warning("☁️ Kòd la ap kouri sou Streamlit Cloud")
+    st.sidebar.info("Libreri MetaTrader5 lokal pa ka kouri dirèkteman sou Cloud.")
 
 # ---------------------------------------------------------
-# FONKSYON POU PASE LÒD
+# FONKSYON EKZEKISYON
 # ---------------------------------------------------------
 def ekzekite_trade(symbol, action, lot):
+    if not MT5_AVAILABLE:
+        return "❌ Ou sou Streamlit Cloud. Pou sèvi ak MT5 lokal gratis, kouri app a sou PC w (streamlit run app.py)."
+    
     if not mt5.initialize():
-        return "❌ Erè: Asire w MetaTrader 5 louvri sou PC w la."
+        return "❌ Souple louvri lojisyèl MetaTrader 5 la sou konpitè w."
 
     symbol_info = mt5.symbol_info(symbol)
     if symbol_info is None:
@@ -36,12 +45,8 @@ def ekzekite_trade(symbol, action, lot):
         mt5.symbol_select(symbol, True)
 
     tick = mt5.symbol_info_tick(symbol)
-    if action == "BUY":
-        trade_type = mt5.ORDER_TYPE_BUY
-        price = tick.ask
-    else:
-        trade_type = mt5.ORDER_TYPE_SELL
-        price = tick.bid
+    price = tick.ask if action == "BUY" else tick.bid
+    trade_type = mt5.ORDER_TYPE_BUY if action == "BUY" else mt5.ORDER_TYPE_SELL
 
     request = {
         "action": mt5.TRADE_ACTION_DEAL,
@@ -56,14 +61,14 @@ def ekzekite_trade(symbol, action, lot):
         "type_filling": mt5.ORDER_FILLING_IOC,
     }
 
-    result = mt5.order_send(request)
-    if result.retcode != mt5.TRADE_RETCODE_DONE:
-        return f"❌ Erè ({result.retcode}): {result.comment}"
+    res = mt5.order_send(request)
+    if res.retcode != mt5.TRADE_RETCODE_DONE:
+        return f"❌ Erè ({res.retcode}): {res.comment}"
 
-    return f"🚀 Lòd {action} sou {symbol} pase ak siksè! Ticket: {result.order}"
+    return f"🚀 Lòd {action} sou {symbol} pase ak siksè! Ticket: {res.order}"
 
 # ---------------------------------------------------------
-# INTÈFAS SENP POU KONTWÒLE BOT LA
+# INTÈFAS PRINGIPAL
 # ---------------------------------------------------------
 col1, col2 = st.columns(2)
 
@@ -77,14 +82,11 @@ with col1:
     btn_sell = st.button("🔴 Vann (SELL)", use_container_width=True)
 
     if btn_buy:
-        res = ekzekite_trade(symbol, "BUY", lot)
-        st.info(res)
+        st.info(ekzekite_trade(symbol, "BUY", lot))
 
     if btn_sell:
-        res = ekzekite_trade(symbol, "SELL", lot)
-        st.info(res)
+        st.info(ekzekite_trade(symbol, "SELL", lot))
 
 with col2:
-    st.subheader("📊 Statut Mache & Analiz SMC")
-    st.write("Isit la ou ka gade grafik SMC ou an ak siyal yo san okenn fòmilè pa ankonbre w.")
-    # Ou ka mete grafik Plotly/SMC ou te genyen an nan pati sa a
+    st.subheader("📊 Analiz & Siyal SMC")
+    st.write("Aplikasyon an ap ouvri nòmalman kounye a sou Cloud san okenn erè rouj!")
