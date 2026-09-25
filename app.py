@@ -90,37 +90,52 @@ if "engine_state" not in st.session_state:
 # ============================================================
 st.markdown("""
 <style>
-.metric-card {
-    background-color: #1E222D;
-    border-radius: 10px;
-    padding: 15px;
-    border-left: 5px solid #2962FF;
-    box-shadow: 0 4px 6px rgba(0,0,0,0.3);
-    margin-bottom: 10px;
-}
-.metric-title {
-    color: #B2B5BE;
-    font-size: 13px;
-    font-weight: 600;
-    text-transform: uppercase;
-}
-.metric-value {
-    color: #FFFFFF;
-    font-size: 22px;
-    font-weight: bold;
-}
-.stButton>button {
-    border-radius: 8px;
-    font-weight: bold;
-}
+.block-container {padding-top:1.2rem; padding-bottom:2rem; max-width:1500px;}
+.hero {background:linear-gradient(135deg,#111827 0%,#0f172a 55%,#172554 100%);border:1px solid #263247;border-radius:22px;padding:24px 28px;margin-bottom:18px;box-shadow:0 14px 35px rgba(0,0,0,.28);}
+.hero-title {color:#f8fafc;font-size:30px;font-weight:850;letter-spacing:-.8px;margin:0;}
+.hero-sub {color:#94a3b8;margin-top:6px;font-size:14px;}
+.mtf-strip {display:flex;gap:8px;flex-wrap:wrap;margin-top:16px;}
+.tf-pill {background:#0b1220;border:1px solid #2b3951;color:#cbd5e1;border-radius:999px;padding:7px 12px;font-size:12px;font-weight:750;}
+.tf-pill.active {color:#fff;border-color:#3b82f6;background:#172554;}
+.metric-card {background:linear-gradient(180deg,#151d2e 0%,#101827 100%);border:1px solid #263247;border-radius:16px;padding:16px 18px;box-shadow:0 8px 22px rgba(0,0,0,.18);margin-bottom:10px;}
+.metric-title {color:#94a3b8;font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.8px;}
+.metric-value {color:#f8fafc;font-size:24px;font-weight:850;}
+.status-card {border-radius:14px;padding:14px 18px;font-weight:800;font-size:15px;margin-bottom:8px;border:1px solid;}
+.status-active {background:rgba(34,197,94,.10);color:#4ade80;border-color:rgba(34,197,94,.35);}
+.status-paused {background:rgba(239,68,68,.10);color:#f87171;border-color:rgba(239,68,68,.35);}
+.signal-buy,.signal-sell,.signal-wait {border-radius:14px;padding:12px 14px;font-weight:850;text-align:center;border:1px solid;margin:8px 0;}
+.signal-buy {color:#4ade80;background:rgba(34,197,94,.10);border-color:rgba(34,197,94,.35);}
+.signal-sell {color:#f87171;background:rgba(239,68,68,.10);border-color:rgba(239,68,68,.35);}
+.signal-wait {color:#fbbf24;background:rgba(245,158,11,.08);border-color:rgba(245,158,11,.30);}
+.section-head {display:flex;justify-content:space-between;align-items:center;gap:12px;padding:4px 0 10px;}
+.section-title {font-size:20px;font-weight:850;color:#f8fafc;}
+.section-note {color:#64748b;font-size:12px;}
+.stButton>button {border-radius:10px;font-weight:800;border:1px solid #334155;}
+[data-testid="stDataFrame"] {border:1px solid #263247;border-radius:14px;overflow:hidden;}
+div[data-testid="stMetric"] {background:#111827;border:1px solid #263247;padding:10px 12px;border-radius:14px;}
 </style>
 """, unsafe_allow_html=True)
 
-st.title("⚡ MT5 Trading Bot Dashboard, SMC V2")
+st.markdown("""
+<div class="hero">
+  <div class="hero-title">⚡ MT5 MASTER BOT · SMC V3</div>
+  <div class="hero-sub">H4 Bias → H1/H30 Liquidity → M15 POI → M1 CHOCH</div>
+  <div class="mtf-strip">
+    <span class="tf-pill active">H4 · BIAS</span>
+    <span class="tf-pill active">H1 · SWINGS</span>
+    <span class="tf-pill active">H30 · LIQUIDITY</span>
+    <span class="tf-pill active">M15 · POI</span>
+    <span class="tf-pill active">M1 · CHOCH TRIGGER</span>
+  </div>
+</div>
+""", unsafe_allow_html=True)
 
 # ============================================================
 # SIDEBAR CONFIG
 # ============================================================
+st.sidebar.markdown("### 🧭 SMC MTF ENGINE")
+st.sidebar.caption("H4 → H1 → H30 → M15 → M1")
+st.sidebar.info("M1 CHOCH se trigger final la. H1/H30 swing highs/lows sèvi kòm map liquidity ak target.")
 st.sidebar.header("⚙️ Risk & Trade Management")
 
 risk_usd = st.sidebar.number_input(
@@ -723,199 +738,187 @@ def find_liquidity_target(symbol, action, structure, entry):
 # ============================================================
 # SMC SCORE / SIGNAL
 # ============================================================
+def get_structure_summary(df, window=3):
+    structure = get_structure(df, window=window)
+    if not structure:
+        return {"trend": "unknown", "last_high": None, "last_low": None,
+                "previous_high": None, "previous_low": None,
+                "swing_highs": [], "swing_lows": []}
+    return structure
+
+
+def nearest_liquidity_level(structure, action, entry):
+    if not structure:
+        return None
+    if action == "BUY":
+        levels = [float(x[1]) for x in structure.get("swing_highs", []) if float(x[1]) > entry]
+        return min(levels) if levels else None
+    levels = [float(x[1]) for x in structure.get("swing_lows", []) if float(x[1]) < entry]
+    return max(levels) if levels else None
+
+
+def combined_liquidity_target(structures, action, entry):
+    candidates = []
+    for structure in structures:
+        target = nearest_liquidity_level(structure, action, entry)
+        if target is not None:
+            candidates.append(float(target))
+    if not candidates:
+        return None
+    return min(candidates) if action == "BUY" else max(candidates)
+
+
 def analyze_smc(symbol):
+    """H4 bias -> H1/H30 liquidity -> M15 POI -> M1 CHOCH trigger."""
     try:
         h4 = get_closed_rates(symbol, mt5.TIMEFRAME_H4, 210)
-        m15 = get_closed_rates(symbol, mt5.TIMEFRAME_M15, 180)
+        h1 = get_closed_rates(symbol, mt5.TIMEFRAME_H1, 240)
+        h30 = get_closed_rates(symbol, mt5.TIMEFRAME_M30, 240)
+        m15 = get_closed_rates(symbol, mt5.TIMEFRAME_M15, 220)
+        m1 = get_closed_rates(symbol, mt5.TIMEFRAME_M1, 180)
 
-        if h4 is None or m15 is None:
+        if any(x is None for x in (h4, h1, h30, m15, m1)):
+            return None
+        if min(len(h4), len(h1), len(h30), len(m15), len(m1)) < 20:
             return None
 
-        if len(h4) < 200 or len(m15) < 50:
-            return None
-
-        # HTF bias.
         ema200 = h4["close"].ewm(span=200, adjust=False).mean().iloc[-1]
-        h4_close = float(h4["close"].iloc[-1])
-        bias = "bullish" if h4_close > ema200 else "bearish"
+        bias = "bullish" if float(h4["close"].iloc[-1]) > ema200 else "bearish"
+        action = "BUY" if bias == "bullish" else "SELL"
 
-        structure = get_structure(m15, window=3)
-        if structure is None:
-            return None
+        h1_structure = get_structure_summary(h1, 3)
+        h30_structure = get_structure_summary(h30, 3)
+        m15_structure = get_structure_summary(m15, 3)
+        m1_structure = get_structure_summary(m1, 2)
 
         atr = calculate_atr(m15, 14)
         if atr is None or atr <= 0:
             return None
 
-        displacement = detect_displacement(m15, atr)
         fvg = detect_fvg(m15)
-        liquidity = detect_liquidity_sweep(m15, structure)
-        structure_break = detect_structure_break(m15, structure)
-        location = premium_discount(m15, structure)
-
-        # Determine direction from HTF bias.
-        action = "BUY" if bias == "bullish" else "SELL"
-
-        score = 0
-        reasons = []
-
-        # HTF bias.
-        score += 1
-        reasons.append("HTF_BIAS")
-
-        # Liquidity sweep must be aligned with the setup.
-        if action == "BUY" and liquidity and liquidity["type"] == "SELL_SIDE_SWEEP":
-            score += 2
-            reasons.append("SELL_SIDE_SWEEP")
-
-        if action == "SELL" and liquidity and liquidity["type"] == "BUY_SIDE_SWEEP":
-            score += 2
-            reasons.append("BUY_SIDE_SWEEP")
-
-        # BOS / CHOCH.
-        if action == "BUY" and structure_break in ("BOS_BULLISH", "CHOCH_BULLISH"):
-            score += 2
-            reasons.append(structure_break)
-
-        if action == "SELL" and structure_break in ("BOS_BEARISH", "CHOCH_BEARISH"):
-            score += 2
-            reasons.append(structure_break)
-
-        # Displacement.
-        if action == "BUY" and displacement == "BULLISH_DISPLACEMENT":
-            score += 1
-            reasons.append("BULLISH_DISPLACEMENT")
-
-        if action == "SELL" and displacement == "BEARISH_DISPLACEMENT":
-            score += 1
-            reasons.append("BEARISH_DISPLACEMENT")
-
-        # FVG.
-        if action == "BUY" and fvg and fvg["type"] == "BULLISH_FVG":
-            score += 1
-            reasons.append("BULLISH_FVG")
-
-        if action == "SELL" and fvg and fvg["type"] == "BEARISH_FVG":
-            score += 1
-            reasons.append("BEARISH_FVG")
-
-        # OB.
         ob = detect_order_block(m15, action)
-        if ob:
-            score += 1
-            reasons.append(ob["type"])
+        location = premium_discount(m15, m15_structure)
+        m15_liquidity = detect_liquidity_sweep(m15, m15_structure)
 
-        # Premium / discount.
+        m1_break = detect_structure_break(m1, m1_structure)
+        m1_atr = calculate_atr(m1, 14)
+        m1_displacement = detect_displacement(m1, m1_atr, 1.0) if m1_atr else None
+        required_choch = "CHOCH_BULLISH" if action == "BUY" else "CHOCH_BEARISH"
+        choch_confirmed = m1_break == required_choch
+
+        score = 1
+        reasons = ["H4_BIAS"]
+        if h1_structure["trend"] == bias:
+            score += 1; reasons.append("H1_STRUCTURE_ALIGNED")
+        if h30_structure["trend"] == bias:
+            score += 1; reasons.append("H30_STRUCTURE_ALIGNED")
         if action == "BUY" and location == "DISCOUNT":
-            score += 1
-            reasons.append("DISCOUNT")
-
+            score += 2; reasons.append("M15_DISCOUNT")
         if action == "SELL" and location == "PREMIUM":
-            score += 1
-            reasons.append("PREMIUM")
+            score += 2; reasons.append("M15_PREMIUM")
+        if fvg and ((action == "BUY" and fvg.get("type") == "BULLISH_FVG") or
+                    (action == "SELL" and fvg.get("type") == "BEARISH_FVG")):
+            score += 1; reasons.append("M15_FVG")
+        if ob:
+            score += 1; reasons.append("M15_ORDER_BLOCK")
+        if m15_liquidity:
+            aligned = ((action == "BUY" and m15_liquidity.get("type") == "SELL_SIDE_SWEEP") or
+                       (action == "SELL" and m15_liquidity.get("type") == "BUY_SIDE_SWEEP"))
+            if aligned:
+                score += 1; reasons.append("M15_LIQUIDITY_SWEEP")
+        if choch_confirmed:
+            score += 3; reasons.append(required_choch)
+        if ((action == "BUY" and m1_displacement == "BULLISH_DISPLACEMENT") or
+            (action == "SELL" and m1_displacement == "BEARISH_DISPLACEMENT")):
+            score += 1; reasons.append("M1_DISPLACEMENT")
 
-        # Require a real liquidity + structure confirmation.
-        liquidity_ok = (
-            (action == "BUY" and liquidity and liquidity["type"] == "SELL_SIDE_SWEEP")
-            or
-            (action == "SELL" and liquidity and liquidity["type"] == "BUY_SIDE_SWEEP")
-        )
-
-        structure_ok = (
-            (action == "BUY" and structure_break in ("BOS_BULLISH", "CHOCH_BULLISH"))
-            or
-            (action == "SELL" and structure_break in ("BOS_BEARISH", "CHOCH_BEARISH"))
-        )
-
-        if score < 8 or not liquidity_ok or not structure_ok:
-            return {
-                "action": None,
-                "score": score,
-                "bias": bias,
-                "structure": structure["trend"],
-                "reasons": reasons,
-                "atr": atr,
-                "fvg": fvg,
-                "ob": ob,
-                "liquidity": liquidity,
-                "structure_break": structure_break,
-                "location": location,
-                "candle_time": str(m15["time"].iloc[-1])
-            }
-
-        # Entry at current market.
-        tick = mt5.symbol_info_tick(symbol)
-        if not tick:
-            return None
-
-        entry = float(tick.ask if action == "BUY" else tick.bid)
-
-        # Structure-based SL.
-        if action == "BUY":
-            candidates = [float(structure["last_low"][1])]
-            if ob:
-                candidates.append(float(ob["low"]))
-            if liquidity:
-                candidates.append(float(liquidity["level"]))
-            sl = min(candidates) - (atr * 0.10)
-        else:
-            candidates = [float(structure["last_high"][1])]
-            if ob:
-                candidates.append(float(ob["high"]))
-            if liquidity:
-                candidates.append(float(liquidity["level"]))
-            sl = max(candidates) + (atr * 0.10)
-
-        # Liquidity target.
-        target = find_liquidity_target(symbol, action, structure, entry)
-
-        if target is None:
-            return None
-
-        risk_distance = abs(entry - sl)
-        reward_distance = abs(target - entry)
-
-        if risk_distance <= 0 or reward_distance <= 0:
-            return None
-
-        rr = reward_distance / risk_distance
-
-        if rr < min_rr:
-            return {
-                "action": None,
-                "score": score,
-                "bias": bias,
-                "structure": structure["trend"],
-                "reasons": reasons,
-                "atr": atr,
-                "fvg": fvg,
-                "ob": ob,
-                "liquidity": liquidity,
-                "structure_break": structure_break,
-                "location": location,
-                "candle_time": str(m15["time"].iloc[-1]),
-                "rr": rr
-            }
-
-        return {
-            "action": action,
-            "score": score,
-            "bias": bias,
-            "structure": structure["trend"],
-            "reasons": reasons,
-            "atr": atr,
-            "fvg": fvg,
-            "ob": ob,
-            "liquidity": liquidity,
-            "structure_break": structure_break,
-            "location": location,
-            "candle_time": str(m15["time"].iloc[-1]),
-            "entry": entry,
-            "sl": sl,
-            "tp": target,
-            "rr": rr
+        base = {
+            "action": None, "score": score, "bias": bias,
+            "h1_structure": h1_structure["trend"],
+            "h30_structure": h30_structure["trend"],
+            "m15_structure": m15_structure["trend"],
+            "m1_structure": m1_structure["trend"],
+            "m1_choch": m1_break, "required_choch": required_choch,
+            "choch_confirmed": choch_confirmed,
+            "m1_displacement": m1_displacement,
+            "m15_liquidity": m15_liquidity, "liquidity": m15_liquidity,
+            "structure_break": m1_break, "location": location,
+            "fvg": fvg, "ob": ob, "atr": atr, "reasons": reasons,
+            "h1_last_high": h1_structure.get("last_high"),
+            "h1_last_low": h1_structure.get("last_low"),
+            "h30_last_high": h30_structure.get("last_high"),
+            "h30_last_low": h30_structure.get("last_low"),
+            "candle_time": str(m1["time"].iloc[-1])
         }
 
+        # No entry without the exact M1 CHOCH in the desired direction.
+        if not choch_confirmed:
+            return base
+
+        tick = mt5.symbol_info_tick(symbol)
+        if not tick:
+            return base
+        entry = float(tick.ask if action == "BUY" else tick.bid)
+
+        if action == "BUY":
+            candidates = []
+            if m1_structure.get("last_low"):
+                candidates.append(float(m1_structure["last_low"][1]))
+            if m15_structure.get("last_low"):
+                candidates.append(float(m15_structure["last_low"][1]))
+            if ob:
+                candidates.append(float(ob["low"]))
+            if not candidates:
+                return base
+            sl = min(candidates) - atr * 0.08
+        else:
+            candidates = []
+            if m1_structure.get("last_high"):
+                candidates.append(float(m1_structure["last_high"][1]))
+            if m15_structure.get("last_high"):
+                candidates.append(float(m15_structure["last_high"][1]))
+            if ob:
+                candidates.append(float(ob["high"]))
+            if not candidates:
+                return base
+            sl = max(candidates) + atr * 0.08
+
+        # The SL is structural. Once that SL is valid, TP is calculated
+        # directly from the configured minimum RR. Liquidity/swing targets
+        # can be farther away and are used as context, not as a reason to
+        # reject an otherwise valid setup.
+        risk_distance = abs(entry - sl)
+        if risk_distance <= 0:
+            return base
+
+        rr = float(min_rr)
+        if rr <= 0:
+            return base
+
+        # Default target = 1:RR (2.0 means 1:2).
+        if action == "BUY":
+            target = entry + (risk_distance * rr)
+        else:
+            target = entry - (risk_distance * rr)
+
+        # Record the nearest H1/H30/M15 liquidity for information only.
+        liquidity_target = combined_liquidity_target(
+            [h1_structure, h30_structure, m15_structure], action, entry
+        )
+
+        base.update({
+            "action": action,
+            "entry": entry,
+            "sl": normalize_price(symbol, sl),
+            "tp": normalize_price(symbol, target),
+            "rr": rr,
+            "target_source": f"Fixed {rr:.2f}R target",
+            "liquidity_target": (
+                normalize_price(symbol, liquidity_target)
+                if liquidity_target is not None else None
+            ),
+        })
+        return base
     except Exception:
         return None
 
@@ -1175,7 +1178,7 @@ def execute_trade(symbol, analysis):
         "tp": tp,
         "deviation": 20,
         "magic": BOT_MAGIC,
-        "comment": "SMC_V2",
+        "comment": "SMC_V3",
         "type_time": mt5.ORDER_TIME_GTC,
         "type_filling": mt5.ORDER_FILLING_IOC,
     }
@@ -1270,7 +1273,7 @@ def partial_close(position, percent):
         "price": price,
         "deviation": 20,
         "magic": BOT_MAGIC,
-        "comment": "SMC_V2_PARTIAL",
+        "comment": "SMC_V3_PARTIAL",
         "type_time": mt5.ORDER_TIME_GTC,
         "type_filling": mt5.ORDER_FILLING_IOC,
     }
@@ -1396,7 +1399,7 @@ def close_bot_positions(mode="ALL"):
             "price": price,
             "deviation": 20,
             "magic": BOT_MAGIC,
-            "comment": "SMC_V2_MANUAL_CLOSE",
+            "comment": "SMC_V3_MANUAL_CLOSE",
             "type_time": mt5.ORDER_TIME_GTC,
             "type_filling": mt5.ORDER_FILLING_IOC,
         }
@@ -1415,7 +1418,8 @@ if MT5_AVAILABLE:
 
         c1.metric("Balance", f"${acc.balance:,.2f}")
         c2.metric("Equity", f"${acc.equity:,.2f}")
-        c3.metric("Floating P/L", f"${acc.profit:,.2f}")
+        pnl_label = "🟢 Floating P/L" if acc.profit >= 0 else "🔴 Floating P/L"
+        c3.metric(pnl_label, f"${acc.profit:,.2f}")
         c4.metric("Spread / symbols", f"{len(st.session_state.custom_symbols)}")
 
 else:
@@ -1434,9 +1438,15 @@ st.session_state.bot_active = read_bot_state()
 
 with col_status:
     if st.session_state.bot_active:
-        st.success("🟢 BOT ACTIF")
+        st.markdown(
+            '<div class="status-card status-active">🟢 BOT ACTIF</div>',
+            unsafe_allow_html=True
+        )
     else:
-        st.error("🔴 BOT EN PAUSE")
+        st.markdown(
+            '<div class="status-card status-paused">🔴 BOT EN PAUSE</div>',
+            unsafe_allow_html=True
+        )
 
 with col_start:
     if st.button("▶️ DÉMARRER", use_container_width=True, type="primary"):
@@ -1552,9 +1562,43 @@ if MT5_AVAILABLE:
                 "Profit ($)": round(p.profit, 2)
             })
 
+        df_positions = pd.DataFrame(rows)
+
+        def color_position_state(val):
+            if val == "🟢":
+                return "color: #22c55e; font-weight: 800; font-size: 18px;"
+            if val == "🔴":
+                return "color: #ef4444; font-weight: 800; font-size: 18px;"
+            return ""
+
+        def color_position_type(val):
+            if val == "BUY":
+                return "color: #22c55e; font-weight: 800;"
+            if val == "SELL":
+                return "color: #ef4444; font-weight: 800;"
+            return ""
+
+        def color_position_profit(val):
+            try:
+                if float(val) > 0:
+                    return "background-color: #14532d; color: #4ade80; font-weight: 800;"
+                if float(val) < 0:
+                    return "background-color: #991b1b; color: #fca5a5; font-weight: 800;"
+            except Exception:
+                pass
+            return "font-weight: 800;"
+
+        styled_positions = (
+            df_positions.style
+            .map(color_position_state, subset=["État"])
+            .map(color_position_type, subset=["Type"])
+            .map(color_position_profit, subset=["Profit ($)"])
+        )
+
         st.dataframe(
-            pd.DataFrame(rows),
-            use_container_width=True
+            styled_positions,
+            use_container_width=True,
+            hide_index=True
         )
     else:
         st.info("Pa gen position bot ouvè.")
@@ -1564,11 +1608,116 @@ st.divider()
 # ============================================================
 # HISTORY / STATISTICS
 # ============================================================
-st.subheader("📜 Historique Bot")
+st.subheader("📜 Historique des Transactions")
+
+def history_row_style(val):
+    try:
+        value = float(val)
+        if value > 0:
+            return "background-color: #14532d; color: #4ade80; font-weight: 800;"
+        if value < 0:
+            return "background-color: #991b1b; color: #fca5a5; font-weight: 800;"
+    except Exception:
+        pass
+    return "font-weight: 800;"
+
+def history_result_style(val):
+    if val == "🟢 GAGNANT":
+        return "background-color: #14532d; color: #4ade80; font-weight: 800;"
+    if val == "🔴 PERDANT":
+        return "background-color: #991b1b; color: #fca5a5; font-weight: 800;"
+    return ""
 
 if MT5_AVAILABLE:
-    start = utc_now() - timedelta(days=30)
     end = utc_now() + timedelta(minutes=1)
+
+    # --------------------------------------------------------
+    # HISTORIQUE DU JOUR
+    # --------------------------------------------------------
+    today_start = datetime.combine(
+        utc_now().date(),
+        datetime.min.time(),
+        tzinfo=timezone.utc
+    )
+
+    try:
+        today_deals = mt5.history_deals_get(today_start, end)
+    except Exception:
+        today_deals = None
+
+    today_exits = []
+    if today_deals:
+        today_exits = [
+            d for d in today_deals
+            if getattr(d, "magic", None) == BOT_MAGIC
+            and d.entry == mt5.DEAL_ENTRY_OUT
+        ]
+
+    today_rows = []
+    today_pnl = 0.0
+    today_wins = 0
+    today_losses = 0
+
+    for d in today_exits:
+        pnl = float(d.profit) + float(d.swap) + float(d.commission)
+        today_pnl += pnl
+
+        if pnl > 0:
+            today_wins += 1
+            result = "🟢 GAGNANT"
+        elif pnl < 0:
+            today_losses += 1
+            result = "🔴 PERDANT"
+        else:
+            result = "⚪ BREAK-EVEN"
+
+        today_rows.append({
+            "Heure": datetime.fromtimestamp(
+                d.time,
+                tz=timezone.utc
+            ).strftime("%H:%M:%S"),
+            "Ticket": d.position_id,
+            "Paire": d.symbol,
+            "Lot": d.volume,
+            "Résultat": result,
+            "Profit ($)": round(pnl, 2)
+        })
+
+    st.markdown("### 📅 Transactions du Jour")
+
+    today_total = today_wins + today_losses
+    today_win_rate = (
+        today_wins / today_total * 100
+        if today_total else 0
+    )
+
+    d1, d2, d3, d4 = st.columns(4)
+    d1.metric("Trades fermés", today_total)
+    d2.metric("🟢 Gagnants", today_wins)
+    d3.metric("🔴 Perdants", today_losses)
+    d4.metric("Profit Net", f"${today_pnl:,.2f}")
+
+    if today_rows:
+        today_df = pd.DataFrame(today_rows)
+
+        st.dataframe(
+            today_df.style
+            .map(history_result_style, subset=["Résultat"])
+            .map(history_row_style, subset=["Profit ($)"]),
+            use_container_width=True,
+            hide_index=True
+        )
+    else:
+        st.info("Aucune transaction clôturée par le bot aujourd'hui.")
+
+    st.divider()
+
+    # --------------------------------------------------------
+    # HISTORIQUE DES 30 DERNIERS JOURS
+    # --------------------------------------------------------
+    st.markdown("### 📆 Historique des 30 Derniers Jours")
+
+    start = utc_now() - timedelta(days=30)
 
     try:
         deals = mt5.history_deals_get(start, end)
@@ -1593,8 +1742,12 @@ if MT5_AVAILABLE:
 
             if pnl > 0:
                 wins += 1
+                result = "🟢 GAGNANT"
             elif pnl < 0:
                 losses += 1
+                result = "🔴 PERDANT"
+            else:
+                result = "⚪ BREAK-EVEN"
 
             rows.append({
                 "Date": datetime.fromtimestamp(
@@ -1605,6 +1758,7 @@ if MT5_AVAILABLE:
                 "Order": d.order,
                 "Paire": d.symbol,
                 "Lot": d.volume,
+                "Résultat": result,
                 "Profit ($)": round(pnl, 2)
             })
 
@@ -1618,9 +1772,14 @@ if MT5_AVAILABLE:
         h4.metric("Consecutive Losses", consecutive_losses())
 
         if rows:
+            history_df = pd.DataFrame(rows)
+
             st.dataframe(
-                pd.DataFrame(rows),
-                use_container_width=True
+                history_df.style
+                .map(history_result_style, subset=["Résultat"])
+                .map(history_row_style, subset=["Profit ($)"]),
+                use_container_width=True,
+                hide_index=True
             )
     else:
         st.info("Aucun historique bot disponible.")
@@ -1637,55 +1796,86 @@ if st.session_state.trade_journal:
 # MARKET ANALYSIS PANEL
 # ============================================================
 st.divider()
-st.subheader("🧠 SMC Scanner")
+st.markdown("""
+<div class="section-head">
+  <div class="section-title">🧠 SMC Multi-Timeframe Scanner</div>
+  <div class="section-note">M1 CHOCH obligatwa pou trigger entry</div>
+</div>
+""", unsafe_allow_html=True)
 
 scanner_rows = []
-
 if MT5_AVAILABLE:
     for symbol in st.session_state.custom_symbols:
         if not ensure_symbol(symbol):
-            scanner_rows.append({
-                "Symbol": symbol,
-                "Signal": "INVALID SYMBOL",
-                "Score": 0,
-                "Bias": "-",
-                "Structure": "-",
-                "RR": 0
-            })
+            scanner_rows.append({"Symbol":symbol,"Signal":"INVALID","H4":"-","H1":"-","H30":"-","M15 POI":"-","M1 CHOCH":"-","Score":0,"RR":0})
             continue
-
         analysis = analyze_smc(symbol)
-
         if not analysis:
-            scanner_rows.append({
-                "Symbol": symbol,
-                "Signal": "NO DATA",
-                "Score": 0,
-                "Bias": "-",
-                "Structure": "-",
-                "RR": 0
-            })
+            scanner_rows.append({"Symbol":symbol,"Signal":"NO DATA","H4":"-","H1":"-","H30":"-","M15 POI":"-","M1 CHOCH":"-","Score":0,"RR":0})
             continue
-
+        action = analysis.get("action")
+        signal = "🟢 BUY" if action == "BUY" else "🔴 SELL" if action == "SELL" else "🟡 WAIT"
+        choch = analysis.get("m1_choch") or "WAIT"
+        if analysis.get("choch_confirmed"):
+            choch = "🟢 " + str(choch).replace("_", " ")
+        poi = []
+        if analysis.get("ob"): poi.append("OB")
+        if analysis.get("fvg"): poi.append("FVG")
+        if analysis.get("location") in ("PREMIUM","DISCOUNT"): poi.append(analysis.get("location"))
         scanner_rows.append({
-            "Symbol": symbol,
-            "Signal": analysis.get("action") or "NO TRADE",
-            "Score": analysis.get("score", 0),
-            "Bias": analysis.get("bias", "-"),
-            "Structure": analysis.get("structure", "-"),
-            "Break": analysis.get("structure_break", "-"),
-            "Liquidity": (
-                analysis.get("liquidity", {}) or {}
-            ).get("type", "-"),
-            "Location": analysis.get("location", "-"),
-            "RR": round(float(analysis.get("rr", 0)), 2)
+            "Symbol":symbol,"Signal":signal,
+            "H4":str(analysis.get("bias","-")).upper(),
+            "H1":str(analysis.get("h1_structure","-")).upper(),
+            "H30":str(analysis.get("h30_structure","-")).upper(),
+            "M15 POI":" + ".join(poi) if poi else "WAIT",
+            "M1 CHOCH":choch,"Score":analysis.get("score",0),
+            "RR":round(float(analysis.get("rr",0)),2)
         })
 
 if scanner_rows:
-    st.dataframe(
-        pd.DataFrame(scanner_rows),
-        use_container_width=True
-    )
+    scanner_df = pd.DataFrame(scanner_rows)
+    def scanner_signal_style(val):
+        if "BUY" in str(val): return "background-color:#14532d;color:#4ade80;font-weight:850;"
+        if "SELL" in str(val): return "background-color:#991b1b;color:#fca5a5;font-weight:850;"
+        if "WAIT" in str(val): return "background-color:#78350f;color:#fde68a;font-weight:850;"
+        return "font-weight:750;"
+    def scanner_bias_style(val):
+        if str(val).upper() == "BULLISH": return "color:#4ade80;font-weight:800;"
+        if str(val).upper() == "BEARISH": return "color:#f87171;font-weight:800;"
+        return "color:#94a3b8;font-weight:700;"
+    st.dataframe(scanner_df.style.map(scanner_signal_style, subset=["Signal","M1 CHOCH"]).map(scanner_bias_style, subset=["H4","H1","H30"]), use_container_width=True, hide_index=True)
+
+if MT5_AVAILABLE:
+    st.markdown("### 🔎 Détail Multi-Timeframe")
+    for symbol in st.session_state.custom_symbols:
+        analysis = analyze_smc(symbol)
+        if not analysis: continue
+        action = analysis.get("action")
+        signal_class, signal_text = (("signal-buy","🟢 BUY READY") if action == "BUY" else ("signal-sell","🔴 SELL READY") if action == "SELL" else ("signal-wait","🟡 WAIT FOR M1 CHOCH"))
+        st.markdown(f'<div class="{signal_class}">{symbol} · {signal_text}</div>', unsafe_allow_html=True)
+        a1,a2,a3,a4,a5 = st.columns(5)
+        a1.metric("H4 Bias", str(analysis.get("bias","-")).upper())
+        a2.metric("H1 Structure", str(analysis.get("h1_structure","-")).upper())
+        a3.metric("H30 Structure", str(analysis.get("h30_structure","-")).upper())
+        a4.metric("M15 POI", "READY" if (analysis.get("ob") or analysis.get("fvg")) else "WAIT")
+        a5.metric("M1 CHOCH", "CONFIRMED" if analysis.get("choch_confirmed") else "WAIT")
+        d1,d2,d3 = st.columns(3)
+        with d1:
+            st.caption("H1 Liquidity Map")
+            h = analysis.get("h1_last_high"); l = analysis.get("h1_last_low")
+            st.write(f"Swing High: {h[1] if h else '-'}")
+            st.write(f"Swing Low: {l[1] if l else '-'}")
+        with d2:
+            st.caption("H30 Liquidity Map")
+            h = analysis.get("h30_last_high"); l = analysis.get("h30_last_low")
+            st.write(f"Swing High: {h[1] if h else '-'}")
+            st.write(f"Swing Low: {l[1] if l else '-'}")
+        with d3:
+            st.caption("M1 Trigger")
+            st.write(f"Required: {str(analysis.get('required_choch','-')).replace('_',' ')}")
+            st.write(f"Actual: {str(analysis.get('m1_choch') or 'WAIT').replace('_',' ')}")
+            st.write(f"RR: {float(analysis.get('rr',0)):.2f}")
+        st.divider()
 
 # ============================================================
 # AUTOMATIC LOOP
